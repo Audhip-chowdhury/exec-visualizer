@@ -1,241 +1,134 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
-import { Editor } from "@/components/Editor";
-import { GraphCanvas } from "@/components/GraphCanvas";
-import { ControlBar } from "@/components/ControlBar";
-import { Timeline } from "@/components/Timeline";
-import { VariablePanel } from "@/components/VariablePanel";
-import { InstrumentedPanel } from "@/components/InstrumentedPanel";
-import { LogPanel } from "@/components/LogPanel";
-import { useExecStore } from "@/store";
-import type { LogEvent } from "@/lib/types";
+import Link from "next/link";
+import { useMemo, useState } from "react";
+import {
+  CATEGORY_ORDER,
+  countByTag,
+  questionsByTag,
+  type Question,
+  type QuestionLevel,
+} from "@/lib/questions";
 
-type Toast = {
-  id: string;
-  message: string;
-  variant: "success" | "error";
-};
+function levelLabel(level: QuestionLevel): string {
+  if (level === "easy") return "Easy";
+  if (level === "medium") return "Medium";
+  return "Hard";
+}
+
+function levelClass(level: QuestionLevel): string {
+  if (level === "easy") return "text-emerald-400";
+  if (level === "medium") return "text-amber-400";
+  return "text-red-400";
+}
 
 export default function Home() {
-  const {
-    code,
-    language,
-    nodes,
-    edges,
-    events,
-    frames,
-    currentFrame,
-    isPlaying,
-    instrumentedCode,
-    setCode,
-    setLanguage,
-    setGraph,
-    appendEvent,
-    rebuildFrames,
-    setCurrentFrame,
-    setPlaying,
-    resetRun,
-    setInstrumentedCode,
-  } = useExecStore();
-  const [toasts, setToasts] = useState<Toast[]>([]);
-  const toastTimersRef = useRef<Map<string, ReturnType<typeof setTimeout>>>(new Map());
+  const tagCounts = useMemo(() => countByTag(), []);
+  const [activeTag, setActiveTag] = useState<string>("Arrays");
+  const [query, setQuery] = useState("");
 
-  const activeNodeId = frames[currentFrame]?.activeNodeId ?? null;
-  const prevNodeId = frames[currentFrame - 1]?.activeNodeId ?? null;
-  const activeNode = nodes.find((node) => node.id === activeNodeId);
-  const highlightedLine = activeNode?.startLine;
-
-  useEffect(() => {
-    if (!isPlaying || frames.length === 0) return;
-    const timer = setInterval(() => {
-      const next = useExecStore.getState().currentFrame + 1;
-      if (next >= useExecStore.getState().frames.length) {
-        useExecStore.getState().setPlaying(false);
-        return;
-      }
-      useExecStore.getState().setCurrentFrame(next);
-    }, 500);
-    return () => clearInterval(timer);
-  }, [isPlaying, frames.length]);
-
-  useEffect(() => {
-    return () => {
-      for (const timer of toastTimersRef.current.values()) clearTimeout(timer);
-      toastTimersRef.current.clear();
-    };
-  }, []);
-
-  const showToast = (message: string, variant: Toast["variant"]) => {
-    const id = `${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
-    setToasts((prev) => [...prev, { id, message, variant }]);
-    const timer = setTimeout(() => {
-      setToasts((prev) => prev.filter((toast) => toast.id !== id));
-      toastTimersRef.current.delete(id);
-    }, 2500);
-    toastTimersRef.current.set(id, timer);
-  };
-
-  const analyze = async () => {
-    const payload = JSON.stringify({ code, language });
-    const [analyzeRes, instrumentRes] = await Promise.all([
-      fetch("/api/analyze", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: payload,
-      }),
-      fetch("/api/instrument", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: payload,
-      }),
-    ]);
-
-    if (!analyzeRes.ok) {
-      const errorData = (await analyzeRes.json().catch(() => ({}))) as { error?: string };
-      showToast(errorData.error ?? "Analyze failed", "error");
-      return;
+  const filteredQuestions = useMemo(() => {
+    let list: Question[] = questionsByTag(activeTag);
+    const q = query.trim().toLowerCase();
+    if (q) {
+      list = list.filter(
+        (item) =>
+          item.title.toLowerCase().includes(q) ||
+          item.id.toLowerCase().includes(q) ||
+          item.description.toLowerCase().includes(q)
+      );
     }
-
-    const data = (await analyzeRes.json()) as { nodes: typeof nodes; edges: typeof edges };
-    setGraph(data.nodes ?? [], data.edges ?? []);
-
-    if (instrumentRes.ok) {
-      const instrData = (await instrumentRes.json()) as { instrumented?: string };
-      setInstrumentedCode(instrData.instrumented ?? null);
-    }
-
-    showToast(`Analyze completed — ${data.nodes?.length ?? 0} nodes found`, "success");
-  };
-
-  const run = async () => {
-    resetRun();
-    const response = await fetch("/api/run", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ code, language }),
-    });
-    if (!response.ok) {
-      const errorData = (await response.json().catch(() => ({}))) as { error?: string };
-      showToast(errorData.error ?? "Run failed", "error");
-      return;
-    }
-    if (!response.body) {
-      showToast("Run failed: missing response stream", "error");
-      return;
-    }
-    const reader = response.body.getReader();
-    const decoder = new TextDecoder();
-    let buffer = "";
-
-    while (true) {
-      const { value, done } = await reader.read();
-      if (done) break;
-      buffer += decoder.decode(value, { stream: true });
-      const chunks = buffer.split("\n\n");
-      buffer = chunks.pop() ?? "";
-      for (const chunk of chunks) {
-        const line = chunk
-          .split("\n")
-          .find((entry) => entry.startsWith("data: "))
-          ?.slice(6);
-        if (!line) continue;
-        const parsed = JSON.parse(line) as Record<string, unknown>;
-        if (parsed.tag === "stderr") {
-          showToast(`Runtime error: ${String(parsed.data)}`, "error");
-          continue;
-        }
-        if (parsed.id && typeof parsed.seq === "number") {
-          appendEvent(parsed as unknown as LogEvent);
-        }
-      }
-    }
-    rebuildFrames();
-    showToast("Run completed", "success");
-  };
+    return list;
+  }, [activeTag, query]);
 
   return (
-    <main className="flex min-h-screen flex-col gap-3 bg-zinc-950 p-4 text-zinc-100">
-      <div className="flex items-center gap-2">
-        <button
-          className="rounded border border-zinc-700 bg-zinc-900 px-3 py-1 text-sm hover:bg-zinc-800"
-          onClick={analyze}
-        >
-          Analyze
-        </button>
-        <button
-          className="rounded border border-zinc-700 bg-zinc-900 px-3 py-1 text-sm hover:bg-zinc-800"
-          onClick={run}
-        >
-          Run
-        </button>
-        <ControlBar
-          isPlaying={isPlaying}
-          onPlayPause={() => setPlaying(!isPlaying)}
-          onStepBack={() => setCurrentFrame(Math.max(0, currentFrame - 1))}
-          onStepForward={() => setCurrentFrame(Math.min(frames.length - 1, currentFrame + 1))}
-        />
-      </div>
+    <main className="min-h-screen bg-zinc-50 text-zinc-900 dark:bg-zinc-950 dark:text-zinc-100">
+      <div className="mx-auto flex max-w-5xl flex-col gap-4 px-4 py-6">
+        <header className="flex flex-col gap-1 border-b border-zinc-200 pb-4 dark:border-zinc-800">
+          <h1 className="text-xl font-semibold tracking-tight">Problem set</h1>
+          <p className="text-sm text-zinc-500 dark:text-zinc-400">
+            Pick a topic, then open a problem to visualize execution.
+          </p>
+        </header>
 
-      {/* Row 1: Editor + Graph */}
-      <div className="grid grid-cols-1 gap-3 xl:grid-cols-2">
-        <Editor
-          code={code}
-          language={language}
-          highlightedLine={highlightedLine}
-          analyzedNodes={nodes.length > 0 ? nodes : undefined}
-          onCodeChange={setCode}
-          onLanguageChange={setLanguage}
-        />
-        <GraphCanvas
-          nodes={nodes}
-          edges={edges}
-          activeNodeId={activeNodeId}
-          prevNodeId={prevNodeId}
-          variables={frames[currentFrame]?.variables ?? {}}
-          playback={{
-            isPlaying,
-            currentFrame,
-            totalFrames: frames.length,
-            onPlayPause: () => setPlaying(!isPlaying),
-            onStepBack: () => setCurrentFrame(Math.max(0, currentFrame - 1)),
-            onStepForward: () => setCurrentFrame(Math.min(frames.length - 1, currentFrame + 1)),
-            onSeek: setCurrentFrame,
-          }}
-        />
-      </div>
-
-      {/* Row 2: Instrumented code preview + Live log events (shown after Analyze/Run) */}
-      {(instrumentedCode !== null || events.length > 0) && (
-        <div className="grid grid-cols-1 gap-3 xl:grid-cols-2">
-          {instrumentedCode !== null && (
-            <InstrumentedPanel code={instrumentedCode} language={language} />
-          )}
-          {events.length > 0 && (
-            <LogPanel
-              events={events}
-              currentSeq={frames[currentFrame]?.event?.seq ?? null}
-            />
-          )}
-        </div>
-      )}
-
-      <Timeline current={currentFrame} total={frames.length} onSeek={setCurrentFrame} />
-      <VariablePanel variables={frames[currentFrame]?.variables ?? {}} />
-
-      <div className="pointer-events-none fixed right-4 top-4 z-50 flex w-80 max-w-[calc(100vw-2rem)] flex-col gap-2">
-        {toasts.map((toast) => (
-          <div
-            key={toast.id}
-            className={`rounded border px-3 py-2 text-sm shadow-lg ${
-              toast.variant === "success"
-                ? "border-emerald-500/60 bg-emerald-900/80 text-emerald-100"
-                : "border-red-500/60 bg-red-900/80 text-red-100"
-            }`}
-          >
-            {toast.message}
+        {/* Topic tabs — LeetCode-style horizontal scroll */}
+        <div className="-mx-4 overflow-x-auto px-4 pb-1">
+          <div className="flex min-w-max gap-6 border-b border-zinc-200 dark:border-zinc-800">
+            {CATEGORY_ORDER.map((tag) => {
+              const count = tagCounts.get(tag) ?? 0;
+              const active = activeTag === tag;
+              return (
+                <button
+                  key={tag}
+                  type="button"
+                  onClick={() => setActiveTag(tag)}
+                  className={`shrink-0 border-b-2 pb-2 text-sm transition-colors ${
+                    active
+                      ? "border-zinc-900 font-medium text-zinc-900 dark:border-zinc-100 dark:text-zinc-100"
+                      : "border-transparent text-zinc-500 hover:text-zinc-800 dark:text-zinc-500 dark:hover:text-zinc-200"
+                  }`}
+                >
+                  <span>{tag}</span>
+                  <span className="ml-1.5 text-zinc-400 dark:text-zinc-500">{count}</span>
+                </button>
+              );
+            })}
           </div>
-        ))}
+        </div>
+
+        {/* Search */}
+        <div className="relative">
+          <span className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-zinc-400">
+            <svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" aria-hidden>
+              <path
+                strokeLinecap="round"
+                strokeLinejoin="round"
+                strokeWidth={2}
+                d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"
+              />
+            </svg>
+          </span>
+          <input
+            type="search"
+            placeholder="Search questions"
+            value={query}
+            onChange={(e) => setQuery(e.target.value)}
+            className="w-full rounded-full border border-zinc-200 bg-white py-2 pl-9 pr-4 text-sm outline-none ring-zinc-400 transition-shadow focus:ring-2 dark:border-zinc-700 dark:bg-zinc-900 dark:focus:ring-zinc-600"
+          />
+        </div>
+
+        {/* Question list */}
+        <div className="overflow-hidden rounded-lg border border-zinc-200 dark:border-zinc-800">
+          <ul className="divide-y divide-zinc-100 dark:divide-zinc-800/80">
+            {filteredQuestions.length === 0 ? (
+              <li className="px-4 py-8 text-center text-sm text-zinc-500">No questions match.</li>
+            ) : (
+              filteredQuestions.map((item, idx) => (
+                <li
+                  key={item.id}
+                  className={`transition-colors hover:bg-zinc-100/80 dark:hover:bg-zinc-900/50 ${
+                    idx % 2 === 0
+                      ? "bg-white dark:bg-zinc-950"
+                      : "bg-zinc-50/80 dark:bg-zinc-900/30"
+                  }`}
+                >
+                  <Link
+                    href={`/problems/${encodeURIComponent(item.id)}`}
+                    className="flex items-center justify-between gap-4 px-4 py-3"
+                  >
+                    <div className="min-w-0 flex-1">
+                      <span className="font-mono text-sm text-zinc-400 dark:text-zinc-500">{item.id}.</span>{" "}
+                      <span className="font-medium text-zinc-900 dark:text-zinc-100">{item.title}</span>
+                    </div>
+                    <span className={`shrink-0 text-sm font-medium ${levelClass(item.level)}`}>
+                      {levelLabel(item.level)}
+                    </span>
+                  </Link>
+                </li>
+              ))
+            )}
+          </ul>
+        </div>
       </div>
     </main>
   );
