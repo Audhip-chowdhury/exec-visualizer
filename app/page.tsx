@@ -42,6 +42,7 @@ export default function Home() {
   const toastTimersRef = useRef<Map<string, ReturnType<typeof setTimeout>>>(new Map());
 
   const activeNodeId = frames[currentFrame]?.activeNodeId ?? null;
+  const prevNodeId = frames[currentFrame - 1]?.activeNodeId ?? null;
   const activeNode = nodes.find((node) => node.id === activeNodeId);
   const highlightedLine = activeNode?.startLine;
 
@@ -139,12 +140,14 @@ export default function Home() {
           .find((entry) => entry.startsWith("data: "))
           ?.slice(6);
         if (!line) continue;
-        const parsed = JSON.parse(line) as LogEvent & { tag?: string; data?: unknown };
+        const parsed = JSON.parse(line) as Record<string, unknown>;
         if (parsed.tag === "stderr") {
           showToast(`Runtime error: ${String(parsed.data)}`, "error");
           continue;
         }
-        if (parsed.id && typeof parsed.seq === "number") appendEvent(parsed);
+        if (parsed.id && typeof parsed.seq === "number") {
+          appendEvent(parsed as unknown as LogEvent);
+        }
       }
     }
     rebuildFrames();
@@ -184,7 +187,22 @@ export default function Home() {
           onCodeChange={setCode}
           onLanguageChange={setLanguage}
         />
-        <GraphCanvas nodes={nodes} edges={edges} activeNodeId={activeNodeId} />
+        <GraphCanvas
+          nodes={nodes}
+          edges={edges}
+          activeNodeId={activeNodeId}
+          prevNodeId={prevNodeId}
+          variables={frames[currentFrame]?.variables ?? {}}
+          playback={{
+            isPlaying,
+            currentFrame,
+            totalFrames: frames.length,
+            onPlayPause: () => setPlaying(!isPlaying),
+            onStepBack: () => setCurrentFrame(Math.max(0, currentFrame - 1)),
+            onStepForward: () => setCurrentFrame(Math.min(frames.length - 1, currentFrame + 1)),
+            onSeek: setCurrentFrame,
+          }}
+        />
       </div>
 
       {/* Row 2: Instrumented code preview + Live log events (shown after Analyze/Run) */}
