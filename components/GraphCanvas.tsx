@@ -18,6 +18,7 @@ import {
 import "@xyflow/react/dist/style.css";
 import type { GraphEdge, GraphNode, LogTag } from "@/lib/types";
 import { detectKind } from "@/lib/detectDataStructure";
+import { filterContainedVars } from "@/lib/filterContainedVars";
 import { kindBadgeLabel, StructureViewer } from "@/components/StructureViewers";
 
 interface PlaybackControls {
@@ -36,6 +37,7 @@ interface GraphCanvasProps {
   activeNodeId: string | null;
   prevNodeId: string | null;
   variables?: Record<string, unknown>;
+  prevVariables?: Record<string, unknown>;
   playback?: PlaybackControls;
 }
 
@@ -441,10 +443,16 @@ const NODE_TYPES = { groupBg: GroupBgNode, varNode: VarNode };
 
 // ─── Floating variable table (Panel inside ReactFlow) ────────────────────────
 
-function VarsPanel({ variables }: { variables: Record<string, unknown> }) {
+function VarsPanel({
+  variables,
+  prevVariables = {},
+}: {
+  variables: Record<string, unknown>;
+  prevVariables?: Record<string, unknown>;
+}) {
   const [open, setOpen] = useState(true);
   const [expandedKey, setExpandedKey] = useState<string | null>(null);
-  const entries = Object.entries(variables);
+  const entries = Object.entries(filterContainedVars(variables));
 
   if (entries.length === 0) return null;
 
@@ -488,7 +496,7 @@ function VarsPanel({ variables }: { variables: Record<string, unknown> }) {
                 </button>
                 {isExpanded && (
                   <div className="border-t border-zinc-800/60 px-2 py-2">
-                    <StructureViewer value={value} />
+                    <StructureViewer value={value} prevValue={prevVariables[key]} />
                   </div>
                 )}
               </li>
@@ -500,7 +508,15 @@ function VarsPanel({ variables }: { variables: Record<string, unknown> }) {
   );
 }
 
-export function GraphCanvas({ nodes, edges, activeNodeId, prevNodeId, variables = {}, playback }: GraphCanvasProps) {
+export function GraphCanvas({
+  nodes,
+  edges,
+  activeNodeId,
+  prevNodeId,
+  variables = {},
+  prevVariables = {},
+  playback,
+}: GraphCanvasProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const [isFullscreen, setIsFullscreen] = useState(false);
 
@@ -666,7 +682,7 @@ export function GraphCanvas({ nodes, edges, activeNodeId, prevNodeId, variables 
           <Background color="#3f3f46" gap={20} />
           <Controls />
           <Panel position="top-right" style={{ marginTop: "2.5rem" }}>
-            <VarsPanel variables={variables} />
+            <VarsPanel variables={variables} prevVariables={prevVariables} />
           </Panel>
         </ReactFlow>
       </div>

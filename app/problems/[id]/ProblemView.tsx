@@ -8,6 +8,7 @@ import { Timeline } from "@/components/Timeline";
 import { VariablePanel } from "@/components/VariablePanel";
 import { InstrumentedPanel } from "@/components/InstrumentedPanel";
 import { LogPanel } from "@/components/LogPanel";
+import { BeginnerView } from "@/components/BeginnerView";
 import { useExecStore } from "@/store";
 import type { Question, QuestionLevel } from "@/lib/questions";
 import type { LogEvent } from "@/lib/types";
@@ -30,13 +31,143 @@ function levelClass(level: QuestionLevel): string {
   return "text-red-400";
 }
 
-function formatTestCases(json: string): string {
+function prettyValue(value: unknown): string {
+  if (value === null) return "null";
+  if (value === undefined) return "undefined";
+  if (typeof value === "string") return `"${value}"`;
+  if (typeof value === "number" || typeof value === "boolean") return String(value);
+  return JSON.stringify(value);
+}
+
+function asLinkedList(value: unknown): string | null {
+  if (value === null) return "null";
+  if (!Array.isArray(value)) return null;
+  if (value.length === 0) return "NULL";
+  return `${value.map((x) => `[${prettyValue(x)}]`).join("->")}->NULL`;
+}
+
+function asLinearArray(value: unknown): string | null {
+  if (!Array.isArray(value)) return null;
+  return `[${value.map((x) => prettyValue(x)).join(", ")}]`;
+}
+
+function asTreeLevelOrder(value: unknown): string | null {
+  if (!Array.isArray(value)) return null;
+  if (value.length === 0) return "empty";
+  return value
+    .map((node, i) => `${i}:${node === null ? "null" : prettyValue(node)}`)
+    .join(" | ");
+}
+
+function prettyInputByTag(rawInput: unknown, tag: string): string {
+  if (tag === "Linked List") {
+    if (Array.isArray(rawInput) && rawInput.length > 0) {
+      const primary = asLinkedList(rawInput[0]);
+      if (rawInput.length === 1 && primary !== null) return primary;
+      const rest = rawInput.slice(1).map((x) => prettyValue(x)).join(", ");
+      return primary === null ? prettyValue(rawInput) : `${primary}${rest ? `, ${rest}` : ""}`;
+    }
+    return asLinkedList(rawInput) ?? prettyValue(rawInput);
+  }
+
+  if (tag === "Binary Tree" || tag === "BST") {
+    if (Array.isArray(rawInput) && rawInput.length > 0 && Array.isArray(rawInput[0])) {
+      return `level-order: ${asTreeLevelOrder(rawInput[0])}`;
+    }
+    return `level-order: ${asTreeLevelOrder(rawInput) ?? prettyValue(rawInput)}`;
+  }
+
+  if (tag === "Graphs") {
+    if (Array.isArray(rawInput)) {
+      return rawInput.map((part, i) => `arg${i + 1}=${prettyValue(part)}`).join("; ");
+    }
+    return prettyValue(rawInput);
+  }
+
+  if (Array.isArray(rawInput)) {
+    return rawInput
+      .map((part, i) => {
+        const arr = asLinearArray(part);
+        return `arg${i + 1}=${arr ?? prettyValue(part)}`;
+      })
+      .join("; ");
+  }
+
+  return prettyValue(rawInput);
+}
+
+function formatTestCasesAscii(json: string, tag: string): string {
   try {
     const parsed = JSON.parse(json) as unknown;
-    return JSON.stringify(parsed, null, 2);
+    if (!Array.isArray(parsed)) return json;
+
+    const title = `--- All Test Cases (${tag}) ---`;
+    const rows = parsed.map((entry, index) => {
+      const test = entry as Record<string, unknown>;
+      const tc = index + 1;
+      const input = prettyInputByTag(test.input ?? null, tag);
+      const expected = prettyValue(test.expected ?? null);
+      const note = test.note ? String(test.note) : "-";
+      return [
+        `TC${tc}: ${input}  =>  ${expected}`,
+        "",
+        `TC${tc} (${tag.toLowerCase()}):`,
+        `  In : ${input}`,
+        `  Out: ${expected}`,
+        `  Note: ${note}`,
+      ].join("\n");
+    });
+    return [title, ...rows].join("\n\n");
   } catch {
     return json;
   }
+}
+
+function getConstraints(level: QuestionLevel): string[] {
+  if (level === "easy") {
+    return [
+      "1 <= input size <= 10^3",
+      "Values are within a standard 32-bit integer range",
+      "Aim for a straightforward iterative solution",
+    ];
+  }
+  if (level === "medium") {
+    return [
+      "1 <= input size <= 10^5",
+      "Solution should avoid nested full scans where possible",
+      "Prefer linear or near-linear runtime",
+    ];
+  }
+  return [
+    "1 <= input size <= 2 * 10^5",
+    "Optimize both runtime and auxiliary memory usage",
+    "Brute-force approaches will likely time out",
+  ];
+}
+
+function getExpectedComplexity(tag: string): { time: string; space: string } {
+  const byTag: Record<string, { time: string; space: string }> = {
+    Arrays: { time: "O(n)", space: "O(1) to O(n)" },
+    "Linked List": { time: "O(n)", space: "O(1)" },
+    "Stack & Queue": { time: "O(n)", space: "O(n)" },
+    Strings: { time: "O(n)", space: "O(n)" },
+    "Binary Search": { time: "O(log n)", space: "O(1)" },
+    Recursion: { time: "O(n) to O(2^n)", space: "O(n) stack" },
+    Backtracking: { time: "Exponential", space: "O(n) to O(n^2)" },
+    Greedy: { time: "O(n) to O(n log n)", space: "O(1) to O(n)" },
+    Heaps: { time: "O(n log n)", space: "O(n)" },
+    "Binary Tree": { time: "O(n)", space: "O(h) to O(n)" },
+    BST: { time: "O(h) average, O(n) worst", space: "O(h)" },
+    "Dynamic Programming": { time: "O(n) to O(n^2)", space: "O(n) to O(n^2)" },
+    Trie: { time: "O(L)", space: "O(total characters)" },
+    "Sorting Algorithms": { time: "O(n log n)", space: "O(1) to O(n)" },
+    "Two Pointers": { time: "O(n)", space: "O(1)" },
+    "Sliding Window": { time: "O(n)", space: "O(1) to O(k)" },
+    Hashing: { time: "O(n) average", space: "O(n)" },
+    "Math & Basic Problems": { time: "O(n) or O(sqrt n)", space: "O(1)" },
+    Graphs: { time: "O(V + E)", space: "O(V)" },
+  };
+  return byTag[tag] ?? { time: "O(n log n)", space: "O(n)" };
 }
 
 export function ProblemView({ question }: { question: Question }) {
@@ -61,7 +192,8 @@ export function ProblemView({ question }: { question: Question }) {
     setInstrumentedCode,
   } = useExecStore();
 
-  const [hintOpen, setHintOpen] = useState(false);
+  const [hintOpenForId, setHintOpenForId] = useState<string | null>(null);
+  const [viewMode, setViewMode] = useState<"beginner" | "advanced">("beginner");
   const [toasts, setToasts] = useState<Toast[]>([]);
   const toastTimersRef = useRef<Map<string, ReturnType<typeof setTimeout>>>(new Map());
 
@@ -71,11 +203,16 @@ export function ProblemView({ question }: { question: Question }) {
     setGraph([], []);
     resetRun();
     setInstrumentedCode(null);
-    setHintOpen(false);
   }, [question.id, question.boilerplate, setCode, setLanguage, setGraph, resetRun, setInstrumentedCode]);
+
+  const hintOpen = hintOpenForId === question.id;
+  const constraints = getConstraints(question.level);
+  const expectedComplexity = getExpectedComplexity(question.tag);
 
   const activeNodeId = frames[currentFrame]?.activeNodeId ?? null;
   const prevNodeId = frames[currentFrame - 1]?.activeNodeId ?? null;
+  const frame = frames[currentFrame];
+  const prevFrame = frames[currentFrame - 1];
   const activeNode = nodes.find((node) => node.id === activeNodeId);
   const highlightedLine = activeNode?.startLine;
 
@@ -204,6 +341,30 @@ export function ProblemView({ question }: { question: Question }) {
         >
           Run
         </button>
+        <div className="mx-1 h-6 w-px bg-zinc-700" />
+        <button
+          type="button"
+          className={`rounded border px-3 py-1 text-sm ${
+            viewMode === "beginner"
+              ? "border-sky-500/70 bg-sky-900/40 text-sky-100"
+              : "border-zinc-700 bg-zinc-900 hover:bg-zinc-800"
+          }`}
+          onClick={() => setViewMode("beginner")}
+        >
+          Variables (Beginner)
+        </button>
+        <button
+          type="button"
+          className={`rounded border px-3 py-1 text-sm ${
+            viewMode === "advanced"
+              ? "border-sky-500/70 bg-sky-900/40 text-sky-100"
+              : "border-zinc-700 bg-zinc-900 hover:bg-zinc-800"
+          }`}
+          onClick={() => setViewMode("advanced")}
+        >
+          Exec Flow (Advanced)
+        </button>
+        <div className="mx-1 h-6 w-px bg-zinc-700" />
         <ControlBar
           isPlaying={isPlaying}
           onPlayPause={() => setPlaying(!isPlaying)}
@@ -213,8 +374,8 @@ export function ProblemView({ question }: { question: Question }) {
       </div>
 
       {/* Top: problem (left) + editor (right) */}
-      <div className="grid min-h-[420px] flex-1 grid-cols-1 gap-3 lg:grid-cols-[minmax(280px,2fr)_minmax(360px,3fr)] lg:items-stretch">
-        <aside className="flex max-h-[70vh] flex-col gap-3 overflow-y-auto rounded-lg border border-zinc-800 bg-zinc-900/40 p-4 lg:max-h-none">
+      <div className="grid min-h-[280px] max-h-[min(55vh,720px)] flex-1 grid-cols-1 gap-3 overflow-hidden lg:grid-cols-[minmax(280px,2fr)_minmax(360px,3fr)] lg:items-stretch">
+        <aside className="flex min-h-0 max-h-[70vh] flex-col gap-3 overflow-y-auto rounded-lg border border-zinc-800 bg-zinc-900/40 p-4 lg:max-h-full">
           <div className="flex flex-wrap items-baseline gap-2">
             <span className="font-mono text-sm text-zinc-400">{question.id}</span>
             <span className={`text-sm font-semibold ${levelClass(question.level)}`}>
@@ -224,11 +385,21 @@ export function ProblemView({ question }: { question: Question }) {
           <h1 className="text-lg font-semibold text-zinc-50">{question.title}</h1>
           <p className="text-sm leading-relaxed text-zinc-300">{question.description}</p>
 
+          <section>
+            <h2 className="mb-1 text-xs font-semibold uppercase tracking-wide text-zinc-500">
+              Explanation
+            </h2>
+            <p className="rounded border border-zinc-800 bg-zinc-950 p-3 text-sm text-zinc-300">
+              {question.hint ??
+                "Build a valid solution from the problem statement and verify with the sample test cases."}
+            </p>
+          </section>
+
           {question.hint ? (
             <div className="rounded-md border border-zinc-700/80 bg-zinc-950/50">
               <button
                 type="button"
-                onClick={() => setHintOpen(!hintOpen)}
+                onClick={() => setHintOpenForId(hintOpen ? null : question.id)}
                 className="flex w-full items-center justify-between px-3 py-2 text-left text-sm font-medium text-zinc-200 hover:bg-zinc-800/50"
               >
                 <span>Hint</span>
@@ -241,21 +412,37 @@ export function ProblemView({ question }: { question: Question }) {
           ) : null}
 
           <section>
-            <h2 className="mb-1 text-xs font-semibold uppercase tracking-wide text-zinc-500">Boilerplate</h2>
-            <pre className="max-h-40 overflow-auto rounded border border-zinc-800 bg-zinc-950 p-3 text-xs text-zinc-300">
-              {question.boilerplate}
-            </pre>
+            <h2 className="mb-1 text-xs font-semibold uppercase tracking-wide text-zinc-500">
+              Constraints
+            </h2>
+            <ul className="space-y-1 rounded border border-zinc-800 bg-zinc-950 p-3 text-xs text-zinc-300">
+              {constraints.map((constraint) => (
+                <li key={constraint}>- {constraint}</li>
+              ))}
+            </ul>
+          </section>
+
+          <section>
+            <h2 className="mb-1 text-xs font-semibold uppercase tracking-wide text-zinc-500">
+              Expected complexity
+            </h2>
+            <div className="rounded border border-zinc-800 bg-zinc-950 p-3 text-xs text-zinc-300">
+              <p>Time: {expectedComplexity.time}</p>
+              <p>Space: {expectedComplexity.space}</p>
+            </div>
           </section>
 
           <section className="min-h-0 flex-1">
-            <h2 className="mb-1 text-xs font-semibold uppercase tracking-wide text-zinc-500">Test cases</h2>
+            <h2 className="mb-1 text-xs font-semibold uppercase tracking-wide text-zinc-500">
+              Test cases (ASCII visual)
+            </h2>
             <pre className="max-h-48 overflow-auto rounded border border-zinc-800 bg-zinc-950 p-3 text-xs text-zinc-300">
-              {formatTestCases(question.test_cases)}
+              {formatTestCasesAscii(question.test_cases, question.tag)}
             </pre>
           </section>
         </aside>
 
-        <div className="flex min-h-[360px] flex-col rounded-lg border border-zinc-800 bg-zinc-950/30 lg:min-h-0">
+        <div className="flex min-h-0 flex-1 flex-col overflow-hidden rounded-lg border border-zinc-800 bg-zinc-950/30">
           <Editor
             code={code}
             language={language}
@@ -269,39 +456,63 @@ export function ProblemView({ question }: { question: Question }) {
 
       {/* Visualizer + panels below */}
       <div className="flex min-h-0 flex-col gap-3">
-        <GraphCanvas
-          nodes={nodes}
-          edges={edges}
-          activeNodeId={activeNodeId}
-          prevNodeId={prevNodeId}
-          variables={frames[currentFrame]?.variables ?? {}}
-          playback={{
-            isPlaying,
-            currentFrame,
-            totalFrames: frames.length,
-            onPlayPause: () => setPlaying(!isPlaying),
-            onStepBack: () => setCurrentFrame(Math.max(0, currentFrame - 1)),
-            onStepForward: () => setCurrentFrame(Math.min(frames.length - 1, currentFrame + 1)),
-            onSeek: setCurrentFrame,
-          }}
-        />
+        <div className="flex flex-wrap items-center gap-2 rounded border border-zinc-800 bg-zinc-900/60 px-3 py-2">
+          <ControlBar
+            isPlaying={isPlaying}
+            onPlayPause={() => setPlaying(!isPlaying)}
+            onStepBack={() => setCurrentFrame(Math.max(0, currentFrame - 1))}
+            onStepForward={() => setCurrentFrame(Math.min(frames.length - 1, currentFrame + 1))}
+          />
+        </div>
+        {viewMode === "beginner" ? (
+          <BeginnerView
+            frame={frame}
+            prevFrame={prevFrame}
+            currentFrame={currentFrame}
+            totalFrames={frames.length}
+            onSeek={setCurrentFrame}
+          />
+        ) : (
+          <>
+            <GraphCanvas
+              nodes={nodes}
+              edges={edges}
+              activeNodeId={activeNodeId}
+              prevNodeId={prevNodeId}
+              variables={frames[currentFrame]?.variables ?? {}}
+              prevVariables={frames[Math.max(0, currentFrame - 1)]?.variables ?? {}}
+              playback={{
+                isPlaying,
+                currentFrame,
+                totalFrames: frames.length,
+                onPlayPause: () => setPlaying(!isPlaying),
+                onStepBack: () => setCurrentFrame(Math.max(0, currentFrame - 1)),
+                onStepForward: () => setCurrentFrame(Math.min(frames.length - 1, currentFrame + 1)),
+                onSeek: setCurrentFrame,
+              }}
+            />
 
-        {(instrumentedCode !== null || events.length > 0) && (
-          <div className="grid grid-cols-1 gap-3 xl:grid-cols-2">
-            {instrumentedCode !== null && (
-              <InstrumentedPanel code={instrumentedCode} language={language} />
+            {(instrumentedCode !== null || events.length > 0) && (
+              <div className="grid grid-cols-1 gap-3 xl:grid-cols-2">
+                {instrumentedCode !== null && (
+                  <InstrumentedPanel code={instrumentedCode} language={language} />
+                )}
+                {events.length > 0 && (
+                  <LogPanel
+                    events={events}
+                    currentSeq={frames[currentFrame]?.event?.seq ?? null}
+                  />
+                )}
+              </div>
             )}
-            {events.length > 0 && (
-              <LogPanel
-                events={events}
-                currentSeq={frames[currentFrame]?.event?.seq ?? null}
-              />
-            )}
-          </div>
+
+            <Timeline current={currentFrame} total={frames.length} onSeek={setCurrentFrame} />
+            <VariablePanel
+              variables={frames[currentFrame]?.variables ?? {}}
+              prevVariables={frames[Math.max(0, currentFrame - 1)]?.variables ?? {}}
+            />
+          </>
         )}
-
-        <Timeline current={currentFrame} total={frames.length} onSeek={setCurrentFrame} />
-        <VariablePanel variables={frames[currentFrame]?.variables ?? {}} />
       </div>
 
       <div className="pointer-events-none fixed right-4 top-14 z-50 flex w-80 max-w-[calc(100vw-2rem)] flex-col gap-2">

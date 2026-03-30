@@ -2,14 +2,16 @@
 
 import { useState } from "react";
 import { detectKind } from "@/lib/detectDataStructure";
+import { filterContainedVars } from "@/lib/filterContainedVars";
 import { kindBadgeLabel, StructureViewer } from "@/components/StructureViewers";
 
 interface VariablePanelProps {
   variables: Record<string, unknown>;
+  prevVariables?: Record<string, unknown>;
 }
 
-export function VariablePanel({ variables }: VariablePanelProps) {
-  const entries = Object.entries(variables);
+export function VariablePanel({ variables, prevVariables }: VariablePanelProps) {
+  const entries = Object.entries(filterContainedVars(variables));
 
   return (
     <div className="rounded border border-zinc-800 bg-zinc-900 p-3">
@@ -19,7 +21,12 @@ export function VariablePanel({ variables }: VariablePanelProps) {
       ) : (
         <ul className="space-y-2 text-xs">
           {entries.map(([key, value0]) => (
-            <VariableRow key={key} name={key} value={value0} />
+            <VariableRow
+              key={key}
+              name={key}
+              value={value0}
+              prevValue={prevVariables?.[key]}
+            />
           ))}
         </ul>
       )}
@@ -27,7 +34,15 @@ export function VariablePanel({ variables }: VariablePanelProps) {
   );
 }
 
-function VariableRow({ name, value }: { name: string; value: unknown }) {
+function VariableRow({
+  name,
+  value,
+  prevValue,
+}: {
+  name: string;
+  value: unknown;
+  prevValue?: unknown;
+}) {
   const [open, setOpen] = useState(true);
   const kind = detectKind(value);
   const badge = kindBadgeLabel(kind, value);
@@ -47,7 +62,7 @@ function VariableRow({ name, value }: { name: string; value: unknown }) {
       </button>
       {open && (
         <div className="border-t border-zinc-800/80 px-2 py-2">
-          <StructureViewer value={value} varName={name} />
+          <StructureViewer value={value} varName={name} prevValue={prevValue} />
         </div>
       )}
     </li>

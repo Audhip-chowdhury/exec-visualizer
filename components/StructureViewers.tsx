@@ -18,6 +18,99 @@ function nodeLabel(v: unknown): string {
   return s.length > 10 ? `${s.slice(0, 9)}…` : s;
 }
 
+function stableStringify(value: unknown): string {
+  if (value === null) return "null";
+  if (value === undefined) return "undefined";
+  if (typeof value === "string") return value;
+  if (typeof value === "number" || typeof value === "boolean" || typeof value === "bigint") {
+    return String(value);
+  }
+  try {
+    return JSON.stringify(value);
+  } catch {
+    return String(value);
+  }
+}
+
+/** Element at index changed vs previous frame snapshot (or index is new). */
+function arraySlotChanged(arr: unknown[], i: number, prevValue: unknown | undefined): boolean {
+  if (prevValue === undefined) return false;
+  if (!Array.isArray(prevValue)) return false;
+  if (i >= prevValue.length) return true;
+  return stableStringify(arr[i]) !== stableStringify(prevValue[i]);
+}
+
+function binaryNodeAtPath(root: unknown, pathKey: string): unknown {
+  let cur: unknown = root;
+  for (const ch of pathKey) {
+    if (cur == null || !isPlainObject(cur)) return undefined;
+    cur = ch === "L" ? cur.left : cur.right;
+  }
+  return cur;
+}
+
+function binaryPathChanged(
+  currRoot: unknown,
+  pathKey: string,
+  prevRoot: unknown | undefined,
+): boolean {
+  if (prevRoot === undefined || !isPlainObject(prevRoot) || !isPlainObject(currRoot)) return false;
+  return stableStringify(binaryNodeAtPath(currRoot, pathKey)) !== stableStringify(binaryNodeAtPath(prevRoot, pathKey));
+}
+
+function linkedListChain(root: unknown): unknown[] {
+  const chain: unknown[] = [];
+  let cur: unknown = root;
+  const seen = new Set<unknown>();
+  while (cur != null && chain.length < 100) {
+    if (!isPlainObject(cur)) break;
+    if (seen.has(cur)) break;
+    seen.add(cur);
+    chain.push(cur);
+    if ((cur.next as unknown) == null) break;
+    cur = cur.next;
+  }
+  return chain;
+}
+
+function linkedSlotChanged(
+  chain: unknown[],
+  i: number,
+  prevRoot: unknown | undefined,
+): boolean {
+  if (prevRoot === undefined || prevRoot === null || !isPlainObject(prevRoot)) return false;
+  const prevChain = linkedListChain(prevRoot);
+  if (i >= prevChain.length) return true;
+  return stableStringify(chain[i]) !== stableStringify(prevChain[i]);
+}
+
+function naryNodeAtPath(root: unknown, pathKey: string): unknown {
+  if (pathKey === "") return root;
+  let cur: unknown = root;
+  for (const seg of pathKey.split(".")) {
+    if (seg === "") continue;
+    const idx = Number(seg);
+    if (!isPlainObject(cur)) return undefined;
+    const ch = Array.isArray(cur.children) ? cur.children : [];
+    cur = ch[idx] as unknown;
+    if (cur === undefined) return undefined;
+  }
+  return cur;
+}
+
+function naryPathChanged(
+  currRoot: unknown,
+  pathKey: string,
+  prevRoot: unknown | undefined,
+): boolean {
+  if (prevRoot === undefined || !isPlainObject(prevRoot)) return false;
+  return stableStringify(naryNodeAtPath(currRoot, pathKey)) !== stableStringify(naryNodeAtPath(prevRoot, pathKey));
+}
+
+function graphEdgeKey(e: { from: string; to: string; weight?: string }): string {
+  return `${e.from}\0${e.to}\0${e.weight ?? ""}`;
+}
+
 // ─── Primitive ────────────────────────────────────────────────────────────────
 
 export function PrimitiveViewer({ value }: { value: unknown }) {
@@ -36,20 +129,29 @@ export function PrimitiveViewer({ value }: { value: unknown }) {
 
 // ─── Array ────────────────────────────────────────────────────────────────────
 
-export function ArrayViewer({ value }: { value: unknown[] }) {
+export function ArrayViewer({ value, prevValue }: { value: unknown[]; prevValue?: unknown }) {
   return (
     <div className="flex max-w-full gap-1 overflow-x-auto pb-1">
-      {value.map((item, i) => (
-        <div
-          key={i}
-          className="flex shrink-0 flex-col items-center gap-0.5 rounded border border-zinc-700 bg-zinc-800/80 px-2 py-1"
-        >
-          <span className="text-[10px] font-medium text-zinc-500">[{i}]</span>
-          <div className="text-xs">
-            <ValueInline value={item} />
+      {value.map((item, i) => {
+        const updated = arraySlotChanged(value, i, prevValue);
+        return (
+          <div
+            key={i}
+            className={`flex shrink-0 flex-col items-center gap-0.5 rounded border px-2 py-1 ${
+              updated
+                ? "border-amber-500/60 bg-amber-950/50"
+                : "border-zinc-700 bg-zinc-800/80"
+            }`}
+          >
+            <span className={`text-[10px] font-medium ${updated ? "text-amber-400" : "text-zinc-500"}`}>
+              [{i}]
+            </span>
+            <div className={`text-xs ${updated ? "text-amber-200" : ""}`}>
+              <ValueInline value={item} />
+            </div>
           </div>
-        </div>
-      ))}
+        );
+      })}
     </div>
   );
 }
@@ -125,29 +227,45 @@ function NestedValue({ value, depth }: { value: unknown; depth: number }) {
 // left subtree first, then root, then right subtree — so the root always sits
 // horizontally between its children.
 
-type BinEntry = { id: string; x: number; y: number; label: string; leftId?: string; rightId?: string };
+type BinEntry = {
+  id: string;
+  x: number;
+  y: number;
+  label: string;
+  leftId?: string;
+  rightId?: string;
+  pathKey: string;
+};
 
 function buildBinaryLayout(root: unknown): BinEntry[] {
   const entries: BinEntry[] = [];
   let xC = 0, idC = 0;
 
-  function walk(n: unknown, depth: number): string | null {
+  function walk(n: unknown, depth: number, pathKey: string): string | null {
     if (n === null || n === undefined) return null;
     if (!isPlainObject(n)) return null;
     const id = `b${idC++}`;
-    const leftId = walk(n.left, depth + 1);
+    const leftId = walk(n.left, depth + 1, pathKey + "L");
     const x = xC++;
-    const rightId = walk(n.right, depth + 1);
+    const rightId = walk(n.right, depth + 1, pathKey + "R");
     const v = "val" in n ? n.val : "value" in n ? n.value : "data" in n ? n.data : "key" in n ? n.key : null;
-    entries.push({ id, x, y: depth, label: nodeLabel(v), leftId: leftId ?? undefined, rightId: rightId ?? undefined });
+    entries.push({
+      id,
+      x,
+      y: depth,
+      label: nodeLabel(v),
+      leftId: leftId ?? undefined,
+      rightId: rightId ?? undefined,
+      pathKey,
+    });
     return id;
   }
 
-  walk(root, 0);
+  walk(root, 0, "");
   return entries;
 }
 
-export function BinaryTreeViewer({ value }: { value: unknown }) {
+export function BinaryTreeViewer({ value, prevValue }: { value: unknown; prevValue?: unknown }) {
   if (!isPlainObject(value)) return <PrimitiveViewer value={value} />;
   const entries = buildBinaryLayout(value);
   if (entries.length === 0) return <span className="text-zinc-500">empty tree</span>;
@@ -192,21 +310,29 @@ export function BinaryTreeViewer({ value }: { value: unknown }) {
     <div className="max-w-full overflow-x-auto rounded border border-zinc-800 bg-zinc-950/80 p-1">
       <svg width={svgW} height={svgH} className="block">
         {edges}
-        {entries.map((e) => (
-          <g key={e.id} transform={`translate(${cx(e.x)}, ${cy(e.y)})`}>
-            <circle r={R} fill="#1e1b4b" stroke="#6366f1" strokeWidth={1.5} />
-            <text
-              x={0}
-              y={5}
-              textAnchor="middle"
-              fill="#c7d2fe"
-              fontSize={12}
-              fontFamily="ui-monospace, monospace"
-            >
-              {e.label}
-            </text>
-          </g>
-        ))}
+        {entries.map((e) => {
+          const updated = binaryPathChanged(value, e.pathKey, prevValue);
+          return (
+            <g key={e.id} transform={`translate(${cx(e.x)}, ${cy(e.y)})`}>
+              <circle
+                r={R}
+                fill={updated ? "#451a03" : "#1e1b4b"}
+                stroke={updated ? "#f59e0b" : "#6366f1"}
+                strokeWidth={updated ? 2 : 1.5}
+              />
+              <text
+                x={0}
+                y={5}
+                textAnchor="middle"
+                fill={updated ? "#fcd34d" : "#c7d2fe"}
+                fontSize={12}
+                fontFamily="ui-monospace, monospace"
+              >
+                {e.label}
+              </text>
+            </g>
+          );
+        })}
       </svg>
     </div>
   );
@@ -215,9 +341,10 @@ export function BinaryTreeViewer({ value }: { value: unknown }) {
 // ─── Linked List ──────────────────────────────────────────────────────────────
 // Horizontal chain of boxes connected by pointer arrows, terminated by ∅.
 
-export function LinkedListViewer({ value }: { value: unknown }) {
+export function LinkedListViewer({ value, prevValue }: { value: unknown; prevValue?: unknown }) {
   type LLNode = { label: string };
   const nodes: LLNode[] = [];
+  const chain = linkedListChain(value);
   let cur: unknown = value;
   const seen = new Set<unknown>();
   let hasCycle = false;
@@ -241,11 +368,11 @@ export function LinkedListViewer({ value }: { value: unknown }) {
   const svgH = NH + PAD * 2;
 
   // Inline arrowhead triangle pointing right at (tx, ty)
-  const arrowHead = (tx: number, ty: number, key: string) => (
+  const arrowHead = (tx: number, ty: number, key: string, fill: string) => (
     <polygon
       key={key}
       points={`${tx - 7},${ty - 4} ${tx},${ty} ${tx - 7},${ty + 4}`}
-      fill="#6366f1"
+      fill={fill}
     />
   );
 
@@ -255,22 +382,26 @@ export function LinkedListViewer({ value }: { value: unknown }) {
         {nodes.map((node, i) => {
           const nx = PAD + i * UNIT;
           const ax2 = nx + UNIT; // arrow endpoint x
+          const updated = linkedSlotChanged(chain, i, prevValue);
+          const stroke = updated ? "#f59e0b" : "#6366f1";
+          const fillRect = updated ? "#451a03" : "#1e1b4b";
+          const fillText = updated ? "#fcd34d" : "#c7d2fe";
           return (
             <g key={i}>
-              <rect x={nx} y={PAD} width={NW} height={NH} rx={RX} fill="#1e1b4b" stroke="#6366f1" strokeWidth={1.5} />
+              <rect x={nx} y={PAD} width={NW} height={NH} rx={RX} fill={fillRect} stroke={stroke} strokeWidth={updated ? 2 : 1.5} />
               <text
                 x={nx + NW / 2}
                 y={midY + 4}
                 textAnchor="middle"
-                fill="#c7d2fe"
+                fill={fillText}
                 fontSize={11}
                 fontFamily="ui-monospace, monospace"
               >
                 {node.label}
               </text>
               {/* pointer line + arrowhead */}
-              <line x1={nx + NW} y1={midY} x2={ax2 - 7} y2={midY} stroke="#6366f1" strokeWidth={1.2} />
-              {arrowHead(ax2, midY, `ah-${i}`)}
+              <line x1={nx + NW} y1={midY} x2={ax2 - 7} y2={midY} stroke={stroke} strokeWidth={1.2} />
+              {arrowHead(ax2, midY, `ah-${i}`, stroke)}
             </g>
           );
         })}
@@ -304,7 +435,7 @@ export function LinkedListViewer({ value }: { value: unknown }) {
 // Reingold-Tilford–style layout: leaves get sequential x slots; parents center
 // over their children.  Bezier curves connect parent bottom to child top.
 
-type NaryEntry = { id: string; cx: number; y: number; label: string; parentId?: string };
+type NaryEntry = { id: string; cx: number; y: number; label: string; parentId?: string; pathKey: string };
 
 const NARY_NW = 52;
 const NARY_NH = 26;
@@ -322,7 +453,7 @@ function buildNaryLayout(root: Record<string, unknown>): { entries: NaryEntry[];
     return ch.reduce((s: number, c: unknown) => s + slots(c), 0);
   }
 
-  function place(n: unknown, startSlot: number, depth: number, parentId?: string): void {
+  function place(n: unknown, startSlot: number, depth: number, parentId: string | undefined, pathKey: string): void {
     if (!isPlainObject(n) || idC > 200) return;
     const id = `t${idC++}`;
     const ch = Array.isArray(n.children) ? (n.children as unknown[]) : [];
@@ -335,18 +466,20 @@ function buildNaryLayout(root: Record<string, unknown>): { entries: NaryEntry[];
     } else {
       const first = leafC;
       let s = startSlot;
-      for (const c of ch) {
+      for (let idx = 0; idx < ch.length; idx++) {
+        const c = ch[idx];
         const cSlots = slots(c);
-        place(c, s, depth + 1, id);
+        const childPath = pathKey === "" ? String(idx) : `${pathKey}.${idx}`;
+        place(c, s, depth + 1, id, childPath);
         s += cSlots;
       }
       const last = leafC;
       cx = ((first + last) / 2) * NARY_SLOT;
     }
-    entries.push({ id, cx, y: depth * NARY_LEVEL_H, label: nodeLabel(v), parentId });
+    entries.push({ id, cx, y: depth * NARY_LEVEL_H, label: nodeLabel(v), parentId, pathKey });
   }
 
-  place(root, 0, 0);
+  place(root, 0, 0, undefined, "");
 
   const maxCx = entries.length > 0 ? Math.max(...entries.map((e) => e.cx)) : 0;
   const maxY = entries.length > 0 ? Math.max(...entries.map((e) => e.y)) : 0;
@@ -357,7 +490,13 @@ function buildNaryLayout(root: Record<string, unknown>): { entries: NaryEntry[];
   };
 }
 
-export function TreeViewer({ value }: { value: Record<string, unknown> }) {
+export function TreeViewer({
+  value,
+  prevValue,
+}: {
+  value: Record<string, unknown>;
+  prevValue?: unknown;
+}) {
   const { entries, svgW, svgH } = buildNaryLayout(value);
   if (entries.length === 0) return <span className="text-zinc-500">empty tree</span>;
 
@@ -386,30 +525,33 @@ export function TreeViewer({ value }: { value: Record<string, unknown> }) {
     <div className="max-w-full overflow-x-auto rounded border border-zinc-800 bg-zinc-950/80 p-1">
       <svg width={svgW} height={svgH} className="block">
         {edges}
-        {entries.map((e) => (
-          <g key={e.id} transform={`translate(${e.cx}, ${e.y})`}>
-            <rect
-              x={-NARY_NW / 2}
-              y={0}
-              width={NARY_NW}
-              height={NARY_NH}
-              rx={5}
-              fill="#1e1b4b"
-              stroke="#6366f1"
-              strokeWidth={1.5}
-            />
-            <text
-              x={0}
-              y={NARY_NH / 2 + 4}
-              textAnchor="middle"
-              fill="#c7d2fe"
-              fontSize={11}
-              fontFamily="ui-monospace, monospace"
-            >
-              {e.label}
-            </text>
-          </g>
-        ))}
+        {entries.map((e) => {
+          const updated = naryPathChanged(value, e.pathKey, prevValue);
+          return (
+            <g key={e.id} transform={`translate(${e.cx}, ${e.y})`}>
+              <rect
+                x={-NARY_NW / 2}
+                y={0}
+                width={NARY_NW}
+                height={NARY_NH}
+                rx={5}
+                fill={updated ? "#451a03" : "#1e1b4b"}
+                stroke={updated ? "#f59e0b" : "#6366f1"}
+                strokeWidth={updated ? 2 : 1.5}
+              />
+              <text
+                x={0}
+                y={NARY_NH / 2 + 4}
+                textAnchor="middle"
+                fill={updated ? "#fcd34d" : "#c7d2fe"}
+                fontSize={11}
+                fontFamily="ui-monospace, monospace"
+              >
+                {e.label}
+              </text>
+            </g>
+          );
+        })}
       </svg>
     </div>
   );
@@ -418,8 +560,20 @@ export function TreeViewer({ value }: { value: Record<string, unknown> }) {
 // ─── Map ──────────────────────────────────────────────────────────────────────
 // Two-column table: Key | Value
 
-export function MapViewer({ entries }: { entries: [unknown, unknown][] }) {
+export function MapViewer({
+  entries,
+  prevEntries,
+}: {
+  entries: [unknown, unknown][];
+  prevEntries?: [unknown, unknown][];
+}) {
   if (entries.length === 0) return <span className="text-zinc-500">empty Map</span>;
+  const prevValByKey = new Map<string, string>();
+  if (prevEntries) {
+    for (const [pk, pv] of prevEntries) {
+      prevValByKey.set(stableStringify(pk), stableStringify(pv));
+    }
+  }
   return (
     <div className="max-w-full overflow-x-auto rounded border border-zinc-700 bg-zinc-900/50 text-xs">
       <table className="w-full border-collapse">
@@ -430,16 +584,27 @@ export function MapViewer({ entries }: { entries: [unknown, unknown][] }) {
           </tr>
         </thead>
         <tbody>
-          {entries.map(([k, v], i) => (
-            <tr key={i} className="border-b border-zinc-800/60 last:border-0 hover:bg-zinc-800/30">
-              <td className="px-2 py-1 align-top font-mono text-amber-400/90">
-                <PrimitiveViewer value={k} />
-              </td>
-              <td className="px-2 py-1 align-top">
-                <NestedValue value={v} depth={1} />
-              </td>
-            </tr>
-          ))}
+          {entries.map(([k, v], i) => {
+            const ks = stableStringify(k);
+            const updated =
+              prevEntries !== undefined &&
+              (!prevValByKey.has(ks) || prevValByKey.get(ks) !== stableStringify(v));
+            return (
+              <tr
+                key={i}
+                className={`border-b last:border-0 hover:bg-zinc-800/30 ${
+                  updated ? "border-amber-600/40 bg-amber-950/25" : "border-zinc-800/60"
+                }`}
+              >
+                <td className="px-2 py-1 align-top font-mono text-amber-400/90">
+                  <PrimitiveViewer value={k} />
+                </td>
+                <td className={`px-2 py-1 align-top ${updated ? "text-amber-100/90" : ""}`}>
+                  <NestedValue value={v} depth={1} />
+                </td>
+              </tr>
+            );
+          })}
         </tbody>
       </table>
     </div>
@@ -449,18 +614,29 @@ export function MapViewer({ entries }: { entries: [unknown, unknown][] }) {
 // ─── Set ──────────────────────────────────────────────────────────────────────
 // Pills showing each unique element
 
-export function SetViewer({ values }: { values: unknown[] }) {
+export function SetViewer({ values, prevValues }: { values: unknown[]; prevValues?: unknown[] }) {
   if (values.length === 0) return <span className="text-zinc-500">empty Set</span>;
+  const prevSet = new Set<string>();
+  if (prevValues) {
+    for (const pv of prevValues) prevSet.add(stableStringify(pv));
+  }
   return (
     <div className="flex max-w-full flex-wrap gap-1 rounded border border-zinc-700 bg-zinc-900/50 p-2">
-      {values.map((v, i) => (
-        <span
-          key={i}
-          className="rounded-full border border-indigo-700/60 bg-indigo-950/60 px-2 py-0.5 font-mono text-xs text-indigo-200"
-        >
-          <ValueInline value={v} />
-        </span>
-      ))}
+      {values.map((v, i) => {
+        const updated = prevValues !== undefined && !prevSet.has(stableStringify(v));
+        return (
+          <span
+            key={i}
+            className={`rounded-full border px-2 py-0.5 font-mono text-xs ${
+              updated
+                ? "border-amber-500/60 bg-amber-950/50 text-amber-200"
+                : "border-indigo-700/60 bg-indigo-950/60 text-indigo-200"
+            }`}
+          >
+            <ValueInline value={v} />
+          </span>
+        );
+      })}
     </div>
   );
 }
@@ -468,17 +644,21 @@ export function SetViewer({ values }: { values: unknown[] }) {
 // ─── Stack ────────────────────────────────────────────────────────────────────
 // Vertical pile; last element (index n-1) is the TOP — like Array.push/pop.
 
-export function StackViewer({ value }: { value: unknown[] }) {
+export function StackViewer({ value, prevValue }: { value: unknown[]; prevValue?: unknown }) {
   if (value.length === 0) return <span className="text-zinc-500">empty stack</span>;
   const items = [...value].reverse(); // top-of-stack first
   return (
     <div className="inline-flex flex-col overflow-hidden rounded border border-indigo-700/60 bg-zinc-950/80">
-      {items.map((item, i) => (
+      {items.map((item, i) => {
+        const origIdx = value.length - 1 - i;
+        const updated = arraySlotChanged(value, origIdx, prevValue);
+        let row =
+          i === 0 ? "bg-indigo-950/60 text-indigo-200" : "bg-zinc-900/50 text-zinc-300";
+        if (updated) row = "bg-amber-950/40 text-amber-200 ring-1 ring-amber-500/50";
+        return (
         <div
           key={i}
-          className={`flex items-center gap-2 border-b border-zinc-700/40 px-3 py-1.5 last:border-b-0 font-mono text-xs ${
-            i === 0 ? "bg-indigo-950/60 text-indigo-200" : "bg-zinc-900/50 text-zinc-300"
-          }`}
+          className={`flex items-center gap-2 border-b border-zinc-700/40 px-3 py-1.5 last:border-b-0 font-mono text-xs ${row}`}
         >
           <span>{nodeLabel(item)}</span>
           {i === 0 && (
@@ -492,7 +672,8 @@ export function StackViewer({ value }: { value: unknown[] }) {
             </span>
           )}
         </div>
-      ))}
+        );
+      })}
     </div>
   );
 }
@@ -500,7 +681,7 @@ export function StackViewer({ value }: { value: unknown[] }) {
 // ─── Queue ────────────────────────────────────────────────────────────────────
 // Horizontal strip; index 0 = FRONT (dequeue side), last index = BACK (enqueue).
 
-export function QueueViewer({ value }: { value: unknown[] }) {
+export function QueueViewer({ value, prevValue }: { value: unknown[]; prevValue?: unknown }) {
   if (value.length === 0) return <span className="text-zinc-500">empty queue</span>;
   return (
     <div className="flex flex-col gap-1">
@@ -510,20 +691,24 @@ export function QueueViewer({ value }: { value: unknown[] }) {
         <span className="text-indigo-400">enqueue →</span>
       </div>
       <div className="flex max-w-full overflow-x-auto rounded border border-zinc-700/60 bg-zinc-950/80">
-        {value.map((item, i) => (
+        {value.map((item, i) => {
+          const updated = arraySlotChanged(value, i, prevValue);
+          let cell =
+            i === 0
+              ? "bg-emerald-950/40 text-emerald-200"
+              : i === value.length - 1
+                ? "bg-indigo-950/40 text-indigo-200"
+                : "bg-zinc-900/50 text-zinc-300";
+          if (updated) cell = "bg-amber-950/40 text-amber-200 ring-1 ring-inset ring-amber-500/40";
+          return (
           <div
             key={i}
-            className={`flex shrink-0 items-center border-r border-zinc-700/40 px-3 py-2 last:border-r-0 font-mono text-xs ${
-              i === 0
-                ? "bg-emerald-950/40 text-emerald-200"
-                : i === value.length - 1
-                  ? "bg-indigo-950/40 text-indigo-200"
-                  : "bg-zinc-900/50 text-zinc-300"
-            }`}
+            className={`flex shrink-0 items-center border-r border-zinc-700/40 px-3 py-2 last:border-r-0 font-mono text-xs ${cell}`}
           >
             {nodeLabel(item)}
           </div>
-        ))}
+          );
+        })}
       </div>
       <div className="flex items-center text-[10px]">
         <span className="text-emerald-600">FRONT</span>
@@ -602,8 +787,22 @@ function parseGraphData(raw: Record<string, unknown>): { nodes: GNode[]; edges: 
   return { nodes, edges: edges.map((ed) => ({ ...ed, directed })) };
 }
 
-export function GraphViewer({ value }: { value: Record<string, unknown> }) {
+export function GraphViewer({
+  value,
+  prevValue,
+}: {
+  value: Record<string, unknown>;
+  prevValue?: unknown;
+}) {
   const { nodes, edges } = parseGraphData(value);
+  const prevParsed =
+    prevValue !== undefined && isPlainObject(prevValue)
+      ? parseGraphData(prevValue as Record<string, unknown>)
+      : null;
+  const prevNodeSnap = new Map(
+    (prevParsed?.nodes ?? []).map((n) => [n.id, stableStringify(n)] as const),
+  );
+  const prevEdgeKeys = new Set((prevParsed?.edges ?? []).map(graphEdgeKey));
   const markerId = useMemo(() => `gm${_graphId++}`, []);
 
   if (nodes.length === 0) return <span className="text-zinc-500">empty graph</span>;
@@ -666,6 +865,7 @@ export function GraphViewer({ value }: { value: Record<string, unknown> }) {
           const y2 = p1.y - uy * (NODE_R + (isDirected ? 10 : 0));
           const mx = (p0.x + p1.x) / 2;
           const my = (p0.y + p1.y) / 2;
+          const edgeUpdated = prevParsed !== null && !prevEdgeKeys.has(graphEdgeKey(e));
           return (
             <g key={i}>
               <line
@@ -673,8 +873,8 @@ export function GraphViewer({ value }: { value: Record<string, unknown> }) {
                 y1={y1}
                 x2={x2}
                 y2={y2}
-                stroke="#4b5563"
-                strokeWidth={1.5}
+                stroke={edgeUpdated ? "#f59e0b" : "#4b5563"}
+                strokeWidth={edgeUpdated ? 2.2 : 1.5}
                 markerEnd={isDirected ? `url(#${markerId})` : undefined}
               />
               {e.weight != null && (
@@ -697,14 +897,22 @@ export function GraphViewer({ value }: { value: Record<string, unknown> }) {
           const p = pos.get(n.id);
           if (!p) return null;
           const lbl = n.label.length > 6 ? `${n.label.slice(0, 5)}…` : n.label;
+          const nodeUpdated =
+            prevParsed !== null &&
+            (!prevNodeSnap.has(n.id) || prevNodeSnap.get(n.id) !== stableStringify(n));
           return (
             <g key={n.id} transform={`translate(${p.x}, ${p.y})`}>
-              <circle r={NODE_R} fill="#1e1b4b" stroke="#6366f1" strokeWidth={1.5} />
+              <circle
+                r={NODE_R}
+                fill={nodeUpdated ? "#451a03" : "#1e1b4b"}
+                stroke={nodeUpdated ? "#f59e0b" : "#6366f1"}
+                strokeWidth={nodeUpdated ? 2 : 1.5}
+              />
               <text
                 x={0}
                 y={5}
                 textAnchor="middle"
-                fill="#c7d2fe"
+                fill={nodeUpdated ? "#fcd34d" : "#c7d2fe"}
                 fontSize={11}
                 fontFamily="ui-monospace, monospace"
               >
@@ -749,26 +957,47 @@ function isQueueName(n: string) {
   return l.includes("queue") || l.includes("deque") || l.includes("fifo");
 }
 
-export function StructureViewer({ value, varName }: { value: unknown; varName?: string }) {
+export function StructureViewer({
+  value,
+  varName,
+  prevValue,
+}: {
+  value: unknown;
+  varName?: string;
+  prevValue?: unknown;
+}) {
   const kind = detectKind(value);
   if (kind === "null" || kind === "primitive") return <PrimitiveViewer value={value} />;
   if (kind === "array") {
     const arr = value as unknown[];
-    if (varName && isStackName(varName)) return <StackViewer value={arr} />;
-    if (varName && isQueueName(varName)) return <QueueViewer value={arr} />;
-    return <ArrayViewer value={arr} />;
+    if (varName && isStackName(varName)) return <StackViewer value={arr} prevValue={prevValue} />;
+    if (varName && isQueueName(varName)) return <QueueViewer value={arr} prevValue={prevValue} />;
+    return <ArrayViewer value={arr} prevValue={prevValue} />;
   }
-  if (kind === "binary_tree") return <BinaryTreeViewer value={value} />;
-  if (kind === "linked_list") return <LinkedListViewer value={value} />;
-  if (kind === "tree" && isPlainObject(value)) return <TreeViewer value={value} />;
-  if (kind === "graph" && isPlainObject(value)) return <GraphViewer value={value} />;
+  if (kind === "binary_tree") return <BinaryTreeViewer value={value} prevValue={prevValue} />;
+  if (kind === "linked_list") return <LinkedListViewer value={value} prevValue={prevValue} />;
+  if (kind === "tree" && isPlainObject(value)) return <TreeViewer value={value} prevValue={prevValue} />;
+  if (kind === "graph" && isPlainObject(value))
+    return <GraphViewer value={value} prevValue={prevValue} />;
   if (kind === "map") {
     const m = value as { entries: [unknown, unknown][] };
-    return <MapViewer entries={m.entries} />;
+    const pm =
+      prevValue &&
+      isPlainObject(prevValue) &&
+      Array.isArray((prevValue as { entries?: unknown }).entries)
+        ? (prevValue as { entries: [unknown, unknown][] }).entries
+        : undefined;
+    return <MapViewer entries={m.entries} prevEntries={pm} />;
   }
   if (kind === "set") {
     const s = value as { values: unknown[] };
-    return <SetViewer values={s.values} />;
+    const ps =
+      prevValue &&
+      isPlainObject(prevValue) &&
+      Array.isArray((prevValue as { values?: unknown }).values)
+        ? (prevValue as { values: unknown[] }).values
+        : undefined;
+    return <SetViewer values={s.values} prevValues={ps} />;
   }
   if (isPlainObject(value)) return <ObjectViewer value={value} depth={0} />;
   return <PrimitiveViewer value={value} />;
