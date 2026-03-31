@@ -71,8 +71,8 @@ export function Editor({
   }, [analyzedNodes]);
 
   return (
-    <div className="flex h-full flex-col gap-2">
-      <div className="flex items-center justify-between">
+    <div className="flex h-full min-h-0 flex-1 flex-col gap-2">
+      <div className="flex shrink-0 items-center justify-between">
         <h2 className="text-sm font-semibold">Source</h2>
         <select
           value={language}
@@ -84,12 +84,17 @@ export function Editor({
           <option value="python">Python</option>
         </select>
       </div>
-      <div className="h-[440px] overflow-hidden rounded border border-zinc-700">
+      <div className="min-h-0 flex-1 overflow-hidden rounded border border-zinc-700">
         <MonacoEditor
           height="100%"
           theme="vs-dark"
           language={language === "python" ? "python" : "javascript"}
           value={code}
+          loading={
+            <div className="flex h-full min-h-[120px] items-center justify-center bg-[#1e1e1e] text-zinc-400">
+              Loading editor…
+            </div>
+          }
           options={{
             minimap: { enabled: false },
             fontSize: 14,
@@ -102,7 +107,7 @@ export function Editor({
           onChange={(value) => onCodeChange(value ?? "")}
         />
       </div>
-      <div className="text-xs text-zinc-400">
+      <div className="shrink-0 text-xs text-zinc-400">
         Active line: {highlightedLine ? highlightedLine : "-"}
       </div>
     </div>

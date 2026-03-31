@@ -194,6 +194,10 @@ export function ProblemView({ question }: { question: Question }) {
 
   const [hintOpenForId, setHintOpenForId] = useState<string | null>(null);
   const [viewMode, setViewMode] = useState<"beginner" | "advanced">("beginner");
+  const [questionOpen, setQuestionOpen] = useState(true);
+  /** Collapse bottom run/viz panel when no analysis yet — more room to code */
+  const [runViewMinimized, setRunViewMinimized] = useState(true);
+  const [pipelineBusy, setPipelineBusy] = useState(false);
   const [toasts, setToasts] = useState<Toast[]>([]);
   const toastTimersRef = useRef<Map<string, ReturnType<typeof setTimeout>>>(new Map());
 
@@ -203,6 +207,9 @@ export function ProblemView({ question }: { question: Question }) {
     setGraph([], []);
     resetRun();
     setInstrumentedCode(null);
+    setQuestionOpen(true);
+    setRunViewMinimized(true);
+    setPipelineBusy(false);
   }, [question.id, question.boilerplate, setCode, setLanguage, setGraph, resetRun, setInstrumentedCode]);
 
   const hintOpen = hintOpenForId === question.id;
@@ -215,6 +222,9 @@ export function ProblemView({ question }: { question: Question }) {
   const prevFrame = frames[currentFrame - 1];
   const activeNode = nodes.find((node) => node.id === activeNodeId);
   const highlightedLine = activeNode?.startLine;
+
+  const hasFrames = frames.length > 0;
+  const hasAnalysis = nodes.length > 0;
 
   useEffect(() => {
     if (!isPlaying || frames.length === 0) return;
@@ -246,7 +256,8 @@ export function ProblemView({ question }: { question: Question }) {
     toastTimersRef.current.set(id, timer);
   };
 
-  const analyze = async () => {
+  /** Static analysis + instrumenter. Returns false if analyze API failed. */
+  const performAnalyze = async (quietSuccess?: boolean): Promise<boolean> => {
     const payload = JSON.stringify({ code, language });
     const [analyzeRes, instrumentRes] = await Promise.all([
       fetch("/api/analyze", {
@@ -264,22 +275,28 @@ export function ProblemView({ question }: { question: Question }) {
     if (!analyzeRes.ok) {
       const errorData = (await analyzeRes.json().catch(() => ({}))) as { error?: string };
       showToast(errorData.error ?? "Analyze failed", "error");
-      return;
+      return false;
     }
 
     const data = (await analyzeRes.json()) as { nodes: typeof nodes; edges: typeof edges };
     setGraph(data.nodes ?? [], data.edges ?? []);
+    setRunViewMinimized(false);
 
     if (instrumentRes.ok) {
       const instrData = (await instrumentRes.json()) as { instrumented?: string };
       setInstrumentedCode(instrData.instrumented ?? null);
     }
 
-    showToast(`Analyze completed — ${data.nodes?.length ?? 0} nodes found`, "success");
+    if (!quietSuccess) {
+      showToast(`Analyze completed — ${data.nodes?.length ?? 0} nodes found`, "success");
+    }
+    return true;
   };
 
-  const run = async () => {
+  /** Execute instrumented code and stream log events. */
+  const performRun = async (quietSuccess?: boolean): Promise<boolean> => {
     resetRun();
+    setQuestionOpen(false);
     const response = await fetch("/api/run", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -288,11 +305,11 @@ export function ProblemView({ question }: { question: Question }) {
     if (!response.ok) {
       const errorData = (await response.json().catch(() => ({}))) as { error?: string };
       showToast(errorData.error ?? "Run failed", "error");
-      return;
+      return false;
     }
     if (!response.body) {
       showToast("Run failed: missing response stream", "error");
-      return;
+      return false;
     }
     const reader = response.body.getReader();
     const decoder = new TextDecoder();
@@ -321,27 +338,185 @@ export function ProblemView({ question }: { question: Question }) {
       }
     }
     rebuildFrames();
-    showToast("Run completed", "success");
+    if (!quietSuccess) {
+      showToast("Compile finished", "success");
+    }
+    return true;
   };
 
+  const analyzeAndRun = async () => {
+    setPipelineBusy(true);
+    try {
+      if (!(await performAnalyze(true))) return;
+      const ranOk = await performRun(true);
+      if (!ranOk) return;
+      const n = useExecStore.getState().nodes.length;
+      showToast(`Compile finished — ${n} flow nodes`, "success");
+    } finally {
+      setPipelineBusy(false);
+    }
+  };
+
+  const questionAside = (
+    <aside className="flex min-h-0 min-w-0 flex-col gap-3 overflow-y-auto rounded-lg border border-zinc-800 bg-zinc-900/40 p-4">
+      <div className="flex flex-wrap items-baseline gap-2">
+        <span className="font-mono text-sm text-zinc-400">{question.id}</span>
+        <span className={`text-sm font-semibold ${levelClass(question.level)}`}>
+          {levelLabel(question.level)}
+        </span>
+      </div>
+      <h1 className="text-lg font-semibold text-zinc-50">{question.title}</h1>
+      <p className="text-sm leading-relaxed text-zinc-300">{question.description}</p>
+
+      <section>
+        <h2 className="mb-1 text-xs font-semibold uppercase tracking-wide text-zinc-500">
+          Explanation
+        </h2>
+        <p className="rounded border border-zinc-800 bg-zinc-950 p-3 text-sm text-zinc-300">
+          {question.hint ??
+            "Build a valid solution from the problem statement and verify with the sample test cases."}
+        </p>
+      </section>
+
+      {question.hint ? (
+        <div className="rounded-md border border-zinc-700/80 bg-zinc-950/50">
+          <button
+            type="button"
+            onClick={() => setHintOpenForId(hintOpen ? null : question.id)}
+            className="flex w-full items-center justify-between px-3 py-2 text-left text-sm font-medium text-zinc-200 hover:bg-zinc-800/50"
+          >
+            <span>Hint</span>
+            <span className="text-zinc-500">{hintOpen ? "−" : "+"}</span>
+          </button>
+          {hintOpen && (
+            <p className="border-t border-zinc-800 px-3 py-2 text-sm text-zinc-400">{question.hint}</p>
+          )}
+        </div>
+      ) : null}
+
+      <section>
+        <h2 className="mb-1 text-xs font-semibold uppercase tracking-wide text-zinc-500">
+          Constraints
+        </h2>
+        <ul className="space-y-1 rounded border border-zinc-800 bg-zinc-950 p-3 text-xs text-zinc-300">
+          {constraints.map((constraint) => (
+            <li key={constraint}>- {constraint}</li>
+          ))}
+        </ul>
+      </section>
+
+      <section>
+        <h2 className="mb-1 text-xs font-semibold uppercase tracking-wide text-zinc-500">
+          Expected complexity
+        </h2>
+        <div className="rounded border border-zinc-800 bg-zinc-950 p-3 text-xs text-zinc-300">
+          <p>Time: {expectedComplexity.time}</p>
+          <p>Space: {expectedComplexity.space}</p>
+        </div>
+      </section>
+
+      <section className="min-h-0 flex-1">
+        <h2 className="mb-1 text-xs font-semibold uppercase tracking-wide text-zinc-500">
+          Test cases (ASCII visual)
+        </h2>
+        <pre className="max-h-48 overflow-auto rounded border border-zinc-800 bg-zinc-950 p-3 text-xs text-zinc-300">
+          {formatTestCasesAscii(question.test_cases, question.tag)}
+        </pre>
+      </section>
+    </aside>
+  );
+
+  const editorPanel = (
+    <div className="flex h-full min-h-0 min-w-0 flex-1 flex-col overflow-hidden rounded-lg border border-zinc-800 bg-zinc-950/30">
+      <Editor
+        code={code}
+        language={language}
+        highlightedLine={highlightedLine}
+        analyzedNodes={nodes.length > 0 ? nodes : undefined}
+        onCodeChange={setCode}
+        onLanguageChange={setLanguage}
+      />
+    </div>
+  );
+
+  const visualizerBlock =
+    viewMode === "beginner" ? (
+      <BeginnerView
+        frame={frame}
+        prevFrame={prevFrame}
+        currentFrame={currentFrame}
+        totalFrames={frames.length}
+        onSeek={setCurrentFrame}
+      />
+    ) : (
+      <div className="flex h-full min-h-0 min-w-0 flex-1 flex-col gap-3 overflow-hidden">
+        <div className="min-h-0 min-w-0 flex-[3] overflow-hidden">
+          <GraphCanvas
+            nodes={nodes}
+            edges={edges}
+            activeNodeId={activeNodeId}
+            prevNodeId={prevNodeId}
+            variables={frames[currentFrame]?.variables ?? {}}
+            prevVariables={frames[Math.max(0, currentFrame - 1)]?.variables ?? {}}
+            playback={{
+              isPlaying,
+              currentFrame,
+              totalFrames: frames.length,
+              onPlayPause: () => setPlaying(!isPlaying),
+              onStepBack: () => setCurrentFrame(Math.max(0, currentFrame - 1)),
+              onStepForward: () => setCurrentFrame(Math.min(frames.length - 1, currentFrame + 1)),
+              onSeek: setCurrentFrame,
+            }}
+          />
+        </div>
+
+        <div className="flex min-h-0 min-w-0 flex-[2] flex-col gap-3 overflow-y-auto pr-1">
+          {(instrumentedCode !== null || events.length > 0) && (
+            <div className="grid shrink-0 grid-cols-1 gap-3 xl:grid-cols-2">
+              {instrumentedCode !== null && (
+                <InstrumentedPanel code={instrumentedCode} language={language} />
+              )}
+              {events.length > 0 && (
+                <LogPanel
+                  events={events}
+                  currentSeq={frames[currentFrame]?.event?.seq ?? null}
+                />
+              )}
+            </div>
+          )}
+
+          <Timeline current={currentFrame} total={frames.length} onSeek={setCurrentFrame} />
+          <VariablePanel
+            variables={frames[currentFrame]?.variables ?? {}}
+            prevVariables={frames[Math.max(0, currentFrame - 1)]?.variables ?? {}}
+          />
+        </div>
+      </div>
+    );
+
+  const vizColumn = (
+    <div className="flex h-full min-h-0 min-w-0 flex-1 flex-col overflow-hidden">
+      {visualizerBlock}
+    </div>
+  );
+
   return (
-    <div className="flex min-h-0 flex-1 flex-col gap-3 p-4">
-      <div className="flex flex-wrap items-center gap-2">
-        <button
-          type="button"
-          className="rounded border border-zinc-700 bg-zinc-900 px-3 py-1 text-sm hover:bg-zinc-800"
-          onClick={analyze}
-        >
-          Analyze
-        </button>
-        <button
-          type="button"
-          className="rounded border border-zinc-700 bg-zinc-900 px-3 py-1 text-sm hover:bg-zinc-800"
-          onClick={run}
-        >
-          Run
-        </button>
-        <div className="mx-1 h-6 w-px bg-zinc-700" />
+    <div className="flex min-h-0 flex-1 flex-col gap-3 overflow-hidden p-4">
+      <div className="flex shrink-0 flex-wrap items-center gap-2">
+        {hasFrames ? (
+          <button
+            type="button"
+            className={`rounded border px-3 py-1 text-sm ${
+              questionOpen
+                ? "border-sky-500/70 bg-sky-900/40 text-sky-100"
+                : "border-zinc-700 bg-zinc-900 hover:bg-zinc-800"
+            }`}
+            onClick={() => setQuestionOpen((open) => !open)}
+          >
+            Question
+          </button>
+        ) : null}
+        {hasFrames ? <div className="mx-1 h-6 w-px bg-zinc-700" /> : null}
         <button
           type="button"
           className={`rounded border px-3 py-1 text-sm ${
@@ -351,7 +526,7 @@ export function ProblemView({ question }: { question: Question }) {
           }`}
           onClick={() => setViewMode("beginner")}
         >
-          Variables (Beginner)
+          Structures
         </button>
         <button
           type="button"
@@ -365,98 +540,17 @@ export function ProblemView({ question }: { question: Question }) {
           Exec Flow (Advanced)
         </button>
         <div className="mx-1 h-6 w-px bg-zinc-700" />
-        <ControlBar
-          isPlaying={isPlaying}
-          onPlayPause={() => setPlaying(!isPlaying)}
-          onStepBack={() => setCurrentFrame(Math.max(0, currentFrame - 1))}
-          onStepForward={() => setCurrentFrame(Math.min(frames.length - 1, currentFrame + 1))}
-        />
-      </div>
-
-      {/* Top: problem (left) + editor (right) */}
-      <div className="grid min-h-[280px] max-h-[min(55vh,720px)] flex-1 grid-cols-1 gap-3 overflow-hidden lg:grid-cols-[minmax(280px,2fr)_minmax(360px,3fr)] lg:items-stretch">
-        <aside className="flex min-h-0 max-h-[70vh] flex-col gap-3 overflow-y-auto rounded-lg border border-zinc-800 bg-zinc-900/40 p-4 lg:max-h-full">
-          <div className="flex flex-wrap items-baseline gap-2">
-            <span className="font-mono text-sm text-zinc-400">{question.id}</span>
-            <span className={`text-sm font-semibold ${levelClass(question.level)}`}>
-              {levelLabel(question.level)}
-            </span>
-          </div>
-          <h1 className="text-lg font-semibold text-zinc-50">{question.title}</h1>
-          <p className="text-sm leading-relaxed text-zinc-300">{question.description}</p>
-
-          <section>
-            <h2 className="mb-1 text-xs font-semibold uppercase tracking-wide text-zinc-500">
-              Explanation
-            </h2>
-            <p className="rounded border border-zinc-800 bg-zinc-950 p-3 text-sm text-zinc-300">
-              {question.hint ??
-                "Build a valid solution from the problem statement and verify with the sample test cases."}
-            </p>
-          </section>
-
-          {question.hint ? (
-            <div className="rounded-md border border-zinc-700/80 bg-zinc-950/50">
-              <button
-                type="button"
-                onClick={() => setHintOpenForId(hintOpen ? null : question.id)}
-                className="flex w-full items-center justify-between px-3 py-2 text-left text-sm font-medium text-zinc-200 hover:bg-zinc-800/50"
-              >
-                <span>Hint</span>
-                <span className="text-zinc-500">{hintOpen ? "−" : "+"}</span>
-              </button>
-              {hintOpen && (
-                <p className="border-t border-zinc-800 px-3 py-2 text-sm text-zinc-400">{question.hint}</p>
-              )}
-            </div>
-          ) : null}
-
-          <section>
-            <h2 className="mb-1 text-xs font-semibold uppercase tracking-wide text-zinc-500">
-              Constraints
-            </h2>
-            <ul className="space-y-1 rounded border border-zinc-800 bg-zinc-950 p-3 text-xs text-zinc-300">
-              {constraints.map((constraint) => (
-                <li key={constraint}>- {constraint}</li>
-              ))}
-            </ul>
-          </section>
-
-          <section>
-            <h2 className="mb-1 text-xs font-semibold uppercase tracking-wide text-zinc-500">
-              Expected complexity
-            </h2>
-            <div className="rounded border border-zinc-800 bg-zinc-950 p-3 text-xs text-zinc-300">
-              <p>Time: {expectedComplexity.time}</p>
-              <p>Space: {expectedComplexity.space}</p>
-            </div>
-          </section>
-
-          <section className="min-h-0 flex-1">
-            <h2 className="mb-1 text-xs font-semibold uppercase tracking-wide text-zinc-500">
-              Test cases (ASCII visual)
-            </h2>
-            <pre className="max-h-48 overflow-auto rounded border border-zinc-800 bg-zinc-950 p-3 text-xs text-zinc-300">
-              {formatTestCasesAscii(question.test_cases, question.tag)}
-            </pre>
-          </section>
-        </aside>
-
-        <div className="flex min-h-0 flex-1 flex-col overflow-hidden rounded-lg border border-zinc-800 bg-zinc-950/30">
-          <Editor
-            code={code}
-            language={language}
-            highlightedLine={highlightedLine}
-            analyzedNodes={nodes.length > 0 ? nodes : undefined}
-            onCodeChange={setCode}
-            onLanguageChange={setLanguage}
-          />
-        </div>
-      </div>
-
-      {/* Visualizer + panels below */}
-      <div className="flex min-h-0 flex-col gap-3">
-        <div className="flex flex-wrap items-center gap-2 rounded border border-zinc-800 bg-zinc-900/60 px-3 py-2">
+        <div className="flex flex-wrap items-center gap-2">
+          <button
+            type="button"
+            title="Analyze, instrument, and execute the code"
+            disabled={pipelineBusy}
+            className="rounded border border-zinc-700 bg-zinc-900 px-3 py-1 text-sm hover:bg-zinc-800 disabled:cursor-not-allowed disabled:opacity-50"
+            onClick={analyzeAndRun}
+          >
+            {pipelineBusy ? "Compiling…" : "Compile"}
+          </button>
+          <div className="h-6 w-px bg-zinc-700" />
           <ControlBar
             isPlaying={isPlaying}
             onPlayPause={() => setPlaying(!isPlaying)}
@@ -464,56 +558,53 @@ export function ProblemView({ question }: { question: Question }) {
             onStepForward={() => setCurrentFrame(Math.min(frames.length - 1, currentFrame + 1))}
           />
         </div>
-        {viewMode === "beginner" ? (
-          <BeginnerView
-            frame={frame}
-            prevFrame={prevFrame}
-            currentFrame={currentFrame}
-            totalFrames={frames.length}
-            onSeek={setCurrentFrame}
-          />
-        ) : (
-          <>
-            <GraphCanvas
-              nodes={nodes}
-              edges={edges}
-              activeNodeId={activeNodeId}
-              prevNodeId={prevNodeId}
-              variables={frames[currentFrame]?.variables ?? {}}
-              prevVariables={frames[Math.max(0, currentFrame - 1)]?.variables ?? {}}
-              playback={{
-                isPlaying,
-                currentFrame,
-                totalFrames: frames.length,
-                onPlayPause: () => setPlaying(!isPlaying),
-                onStepBack: () => setCurrentFrame(Math.max(0, currentFrame - 1)),
-                onStepForward: () => setCurrentFrame(Math.min(frames.length - 1, currentFrame + 1)),
-                onSeek: setCurrentFrame,
-              }}
-            />
-
-            {(instrumentedCode !== null || events.length > 0) && (
-              <div className="grid grid-cols-1 gap-3 xl:grid-cols-2">
-                {instrumentedCode !== null && (
-                  <InstrumentedPanel code={instrumentedCode} language={language} />
-                )}
-                {events.length > 0 && (
-                  <LogPanel
-                    events={events}
-                    currentSeq={frames[currentFrame]?.event?.seq ?? null}
-                  />
-                )}
-              </div>
-            )}
-
-            <Timeline current={currentFrame} total={frames.length} onSeek={setCurrentFrame} />
-            <VariablePanel
-              variables={frames[currentFrame]?.variables ?? {}}
-              prevVariables={frames[Math.max(0, currentFrame - 1)]?.variables ?? {}}
-            />
-          </>
-        )}
       </div>
+
+      {hasFrames && !questionOpen ? (
+        <div className="flex min-w-0 shrink-0 items-baseline gap-2 border-b border-zinc-800 pb-2">
+          <span className="shrink-0 font-mono text-xs text-zinc-400">{question.id}</span>
+          <h2 className="min-w-0 truncate text-sm font-semibold text-zinc-50" title={question.title}>
+            {question.title}
+          </h2>
+        </div>
+      ) : null}
+
+      {!hasFrames ? (
+        <div className="flex min-h-0 flex-1 flex-col gap-2 overflow-hidden">
+          <div className="grid min-h-0 min-w-0 flex-1 grid-cols-1 grid-rows-[minmax(0,1fr)] gap-3 overflow-hidden lg:grid-cols-[minmax(280px,2fr)_minmax(360px,3fr)]">
+            {questionAside}
+            {editorPanel}
+          </div>
+          {!hasAnalysis ? (
+            <button
+              type="button"
+              onClick={() => setRunViewMinimized((v) => !v)}
+              className="flex w-full shrink-0 items-center justify-center gap-2 rounded border border-zinc-700 bg-zinc-900/80 py-1.5 text-xs text-zinc-300 hover:bg-zinc-800"
+            >
+              <span className="text-zinc-400">{runViewMinimized ? "▼" : "▲"}</span>
+              <span>{runViewMinimized ? "Show execution preview" : "Hide execution preview"}</span>
+              <span className="hidden text-zinc-500 sm:inline">— graph, timeline, run output</span>
+            </button>
+          ) : null}
+          {hasAnalysis || !runViewMinimized ? (
+            <div className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden">
+              {vizColumn}
+            </div>
+          ) : null}
+        </div>
+      ) : (
+        <div
+          className={`grid min-h-0 min-w-0 flex-1 grid-cols-1 grid-rows-[minmax(0,1fr)] gap-3 overflow-hidden lg:items-stretch ${
+            questionOpen
+              ? "lg:grid-cols-[minmax(260px,1.2fr)_minmax(280px,1.8fr)_minmax(320px,2.5fr)]"
+              : "lg:grid-cols-[minmax(320px,2fr)_minmax(360px,3fr)]"
+          }`}
+        >
+          {questionOpen ? questionAside : null}
+          {editorPanel}
+          {vizColumn}
+        </div>
+      )}
 
       <div className="pointer-events-none fixed right-4 top-14 z-50 flex w-80 max-w-[calc(100vw-2rem)] flex-col gap-2">
         {toasts.map((toast) => (

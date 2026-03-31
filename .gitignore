@@ -40,6 +40,9 @@ yarn-error.log*
 *.tsbuildinfo
 next-env.d.ts
 
+# generated SQLite database (rebuilt on every npm run build / db:seed)
+/data/questions.db
+
 # LLMs
 .cursor
 AGENTS.md

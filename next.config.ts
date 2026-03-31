@@ -1,7 +1,10 @@
 import type { NextConfig } from "next";
 
 const nextConfig: NextConfig = {
-  /* config options here */
+  // Ensure the SQLite database file is bundled with every server route
+  outputFileTracingIncludes: {
+    "/*": ["./data/questions.db"],
+  },
 };
 
 export default nextConfig;

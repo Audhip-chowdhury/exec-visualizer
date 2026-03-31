@@ -57,7 +57,7 @@ function shortPreview(value: unknown): string {
 }
 
 function eventDescription(frame: Frame | undefined): string {
-  if (!frame) return "Run the code and move the timeline to see variable changes step by step.";
+  if (!frame) return "Compile the code and move the timeline to see variable changes step by step.";
   const { event } = frame;
   if (!event) return `Step ${frame.seq}`;
   switch (event.tag) {
@@ -123,52 +123,50 @@ export function BeginnerView({
     .sort((a, b) => a.rank - b.rank || a.name.localeCompare(b.name));
 
   return (
-    <div className="flex flex-col gap-3">
-      <div className="grid grid-cols-1 gap-3 xl:grid-cols-2">
-        <div className="flex flex-col gap-3">
-          <div className="rounded border border-zinc-800 bg-zinc-900 p-3">
-            <h3 className="mb-2 text-sm font-semibold text-zinc-100">Current Step</h3>
-            <div className="text-sm text-zinc-200">{eventDescription(frame)}</div>
-            {frame && (
-              <div className="mt-2 text-xs text-zinc-400">
-                Step: {frame.seq} | Event: {frame.event?.tag ?? "none"}
-              </div>
-            )}
+    <div className="flex min-h-0 flex-1 flex-col gap-2">
+      <div className="shrink-0 rounded border border-zinc-800 bg-zinc-900 px-3 py-2">
+        <div className="mb-1 text-xs font-semibold uppercase tracking-wide text-zinc-500">Current Step</div>
+        <div className="text-sm leading-snug text-zinc-200">{eventDescription(frame)}</div>
+        {frame && (
+          <div className="mt-1 text-[11px] text-zinc-500">
+            Step: {frame.seq} · {frame.event?.tag ?? "none"}
           </div>
-        </div>
-
-        <div className="rounded border border-zinc-800 bg-zinc-900 p-3">
-          <h3 className="mb-2 text-sm font-semibold text-zinc-100">Variable Structures</h3>
-          {ranked.length === 0 ? (
-            <div className="text-xs text-zinc-400">No variable snapshots yet.</div>
-          ) : (
-            <div className="space-y-2.5">
-              {ranked.map(({ name, value, kind, changed }) => (
-                <div key={name} className={cardClass(kind)}>
-                  <div className="mb-2 flex items-center gap-2">
-                    <span className="font-semibold text-zinc-100">{name}</span>
-                    <span className="rounded-full border border-zinc-600 bg-zinc-800/80 px-2 py-0.5 text-[10px] font-medium uppercase tracking-wide text-zinc-300">
-                      {kindBadgeLabel(kind, value)}
-                    </span>
-                    {changed && (
-                      <span className="rounded border border-amber-500/60 bg-amber-900/40 px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-amber-200">
-                        Updated
-                      </span>
-                    )}
-                  </div>
-                  {kind === "primitive" || kind === "null" ? (
-                    <div className="text-sm text-zinc-200">{shortPreview(value)}</div>
-                  ) : (
-                    <StructureViewer value={value} varName={name} prevValue={prevVariables[name]} />
-                  )}
-                </div>
-              ))}
-            </div>
-          )}
-        </div>
+        )}
       </div>
 
-      <Timeline current={currentFrame} total={totalFrames} onSeek={onSeek} />
+      <div className="flex min-h-0 flex-1 flex-col overflow-hidden rounded border border-zinc-800 bg-zinc-900 p-3">
+        <h3 className="mb-2 shrink-0 text-sm font-semibold text-zinc-100">Variable Structures</h3>
+        {ranked.length === 0 ? (
+          <div className="text-xs text-zinc-400">No variable snapshots yet.</div>
+        ) : (
+          <div className="min-h-0 flex-1 space-y-2.5 overflow-y-auto pr-1">
+            {ranked.map(({ name, value, kind, changed }) => (
+              <div key={name} className={cardClass(kind)}>
+                <div className="mb-2 flex flex-wrap items-center gap-2">
+                  <span className="font-semibold text-zinc-100">{name}</span>
+                  <span className="rounded-full border border-zinc-600 bg-zinc-800/80 px-2 py-0.5 text-[10px] font-medium uppercase tracking-wide text-zinc-300">
+                    {kindBadgeLabel(kind, value)}
+                  </span>
+                  {changed && (
+                    <span className="rounded border border-amber-500/60 bg-amber-900/40 px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-amber-200">
+                      Updated
+                    </span>
+                  )}
+                </div>
+                {kind === "primitive" || kind === "null" ? (
+                  <div className="text-sm text-zinc-200">{shortPreview(value)}</div>
+                ) : (
+                  <StructureViewer value={value} varName={name} prevValue={prevVariables[name]} />
+                )}
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+
+      <div className="shrink-0">
+        <Timeline current={currentFrame} total={totalFrames} onSeek={onSeek} />
+      </div>
     </div>
   );
 }

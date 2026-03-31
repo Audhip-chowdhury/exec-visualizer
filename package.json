@@ -3,8 +3,9 @@
   "version": "0.1.0",
   "private": true,
   "scripts": {
-    "dev": "next dev",
-    "build": "next build",
+    "db:seed": "node scripts/seed-db.mjs",
+    "dev": "npm run db:seed && next dev",
+    "build": "npm run db:seed && next build",
     "start": "next start",
     "lint": "eslint",
     "test": "vitest run",
@@ -13,7 +14,9 @@
   },
   "dependencies": {
     "@monaco-editor/react": "^4.7.0",
+    "@types/better-sqlite3": "^7.6.13",
     "@xyflow/react": "^12.10.1",
+    "better-sqlite3": "^12.8.0",
     "monaco-themes": "^0.4.8",
     "next": "16.2.1",
     "react": "19.2.4",

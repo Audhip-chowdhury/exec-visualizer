@@ -640,7 +640,7 @@ export function GraphCanvas({
       className={
         isFullscreen
           ? "fixed inset-0 z-50 flex flex-col bg-zinc-950"
-          : "relative flex h-[460px] flex-col rounded border border-zinc-700 bg-zinc-900"
+          : "relative flex h-full min-h-[200px] flex-col rounded border border-zinc-700 bg-zinc-900"
       }
     >
       {/* Fullscreen toggle button */}

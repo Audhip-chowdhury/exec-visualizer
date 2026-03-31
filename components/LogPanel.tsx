@@ -47,7 +47,7 @@ export function LogPanel({ events, currentSeq }: LogPanelProps) {
         style={{ minHeight: 0, maxHeight: "440px" }}
       >
         {events.length === 0 ? (
-          <p className="text-zinc-600 italic py-2 text-center">No events yet — click Run.</p>
+          <p className="text-zinc-600 italic py-2 text-center">No events yet — click Compile.</p>
         ) : (
           events.map((event) => {
             const isActive = event.seq === currentSeq;
